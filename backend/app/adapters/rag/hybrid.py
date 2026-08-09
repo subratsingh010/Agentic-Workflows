@@ -190,20 +190,14 @@ class MilvusHybridRetriever(PolicyRetriever):
             raise ValueError("embedding_model is required")
         self._embeddings = embedding_model
         self._bm25 = BM25SparseScorer(POLICY_CHUNKS, bm25_k1, bm25_b)
-        self._fallback = fallback or InMemoryHybridRetriever(
-            dense_weight,
-            sparse_weight,
-            retrieval_mode,
-            fusion_strategy,
-            candidate_multiplier,
-            rrf_k,
-            bm25_k1,
-            bm25_b,
-            embedding_model=self._embeddings,
-        )
+        self._fallback = fallback
 
     async def retrieve(self, query: str, actor: ActorContext, top_k: int) -> list[RetrievedChunk]:
         if self._retrieval_mode == "sparse":
+            if self._fallback is None:
+                raise RuntimeError(
+                    "Sparse-only Milvus search requires the native Milvus hybrid retriever"
+                )
             return await self._fallback.retrieve(query, actor, top_k)
         candidate_limit = max(top_k * self._candidate_multiplier, top_k)
         try:
@@ -217,6 +211,8 @@ class MilvusHybridRetriever(PolicyRetriever):
                 output_fields=["document_id", "title", "chunk_id", "text", "metadata_json"],
             )[0]
         except Exception:
+            if self._fallback is None:
+                raise
             return await self._fallback.retrieve(query, actor, top_k)
 
         sparse_scores = self._bm25.scores(query)
@@ -367,17 +363,7 @@ class NativeMilvusHybridRetriever(PolicyRetriever):
         if embedding_model is None:
             raise ValueError("embedding_model is required")
         self._embeddings = embedding_model
-        self._fallback = fallback or InMemoryHybridRetriever(
-            dense_weight=dense_weight,
-            sparse_weight=sparse_weight,
-            retrieval_mode=retrieval_mode,
-            fusion_strategy=fusion_strategy,
-            candidate_multiplier=candidate_multiplier,
-            rrf_k=rrf_k,
-            bm25_k1=bm25_k1,
-            bm25_b=bm25_b,
-            embedding_model=self._embeddings,
-        )
+        self._fallback = fallback
 
     async def retrieve(self, query: str, actor: ActorContext, top_k: int) -> list[RetrievedChunk]:
         candidate_limit = max(top_k * self._candidate_multiplier, top_k)
@@ -396,6 +382,8 @@ class NativeMilvusHybridRetriever(PolicyRetriever):
                 output_fields=["document_id", "title", "chunk_id", "text", "metadata_json"],
             )[0]
         except Exception:
+            if self._fallback is None:
+                raise
             return await self._fallback.retrieve(query, actor, top_k)
 
         chunks: list[RetrievedChunk] = []
@@ -407,7 +395,12 @@ class NativeMilvusHybridRetriever(PolicyRetriever):
                     title=entity.get("title"),
                     chunk_id=entity.get("chunk_id"),
                     text=entity.get("text"),
-                    metadata=entity.get("metadata_json") or {},
+                    metadata=(entity.get("metadata_json") or {})
+                    | {
+                        "retrieval_backend": "milvus_native_hybrid",
+                        "retrieval_mode": self._retrieval_mode,
+                        "fusion_strategy": self._fusion_strategy,
+                    },
                     score=max(float(hit.score), 0.0),
                 )
             )
@@ -421,7 +414,12 @@ class NativeMilvusHybridRetriever(PolicyRetriever):
         if utility.has_collection(self._collection_name):
             existing = Collection(self._collection_name)
             field_names = {field.name for field in existing.schema.fields}
-            if {"dense", "sparse", "text"}.issubset(field_names):
+            dense_field = next((field for field in existing.schema.fields if field.name == "dense"), None)
+            dense_dim = int((getattr(dense_field, "params", {}) or {}).get("dim", 0)) if dense_field else 0
+            expected_schema = {"dense", "sparse", "text"}.issubset(field_names)
+            expected_dim = dense_dim == self._vector_dim
+            expected_count = int(existing.num_entities) == len(POLICY_CHUNKS)
+            if expected_schema and expected_dim and expected_count:
                 existing.load()
                 return existing
             utility.drop_collection(self._collection_name)

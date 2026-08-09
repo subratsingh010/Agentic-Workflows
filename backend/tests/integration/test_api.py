@@ -1,9 +1,12 @@
 from fastapi.testclient import TestClient
 
+from app.api.dependencies import get_agent
 from app.main import app
+from tests.support_embeddings import SupportEmbeddingModel
 
 
-def test_chat_api_policy_smoke():
+def test_chat_api_policy_smoke(agent):
+    app.dependency_overrides[get_agent] = lambda: agent
     client = TestClient(app)
     response = client.post(
         "/api/v1/chat",
@@ -13,10 +16,15 @@ def test_chat_api_policy_smoke():
 
     assert response.status_code == 200
     assert response.json()["intent"] == "policy_qa"
+    app.dependency_overrides.clear()
 
 
 
-def test_ops_knowledge_ingest_and_eval_smoke():
+def test_ops_knowledge_ingest_and_eval_smoke(monkeypatch):
+    monkeypatch.setattr(
+        "app.application.operations._build_embedding_model",
+        lambda settings: SupportEmbeddingModel(),
+    )
     client = TestClient(app)
     headers = {"Authorization": "Bearer dev-token"}
 

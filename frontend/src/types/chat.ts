@@ -96,7 +96,58 @@ export type OpsRebuildResponse = {
   ingest: OpsIngestResponse;
 };
 
+export type EvalPipeline = {
+  embedding: {
+    provider: string;
+    model: string;
+    device: string;
+    dim: number;
+  };
+  ingestion: {
+    source_dir: string;
+    chunk_size: number;
+    chunk_overlap: number;
+    chunks: number;
+  };
+  retrieval: {
+    backend: string;
+    native_milvus_hybrid: boolean;
+    collection: string;
+    mode: string;
+    fusion: string;
+    dense_weight: number;
+    sparse_weight: number;
+    candidate_multiplier: number;
+  };
+  reranker: {
+    enabled: boolean;
+    provider: string;
+  };
+  llm: {
+    provider: string;
+    model: string;
+  };
+};
+
+export type EvalCaseResult = {
+  id: string;
+  question: string;
+  expected_chunk_id: string;
+  retrieved_chunk_ids: string[];
+  pre_rerank_chunk_ids?: string[];
+  post_rerank_chunk_ids?: string[];
+  generated_answer?: string;
+  ground_truth?: string;
+  retrieval_backend?: string;
+  reranker?: string;
+  rank?: number | null;
+  top_score?: number;
+  [key: string]: unknown;
+};
+
 export type EvalRunResponse = {
   summary: EvalSummary;
+  pipeline: EvalPipeline;
+  cases: EvalCaseResult[];
   output: string;
 };

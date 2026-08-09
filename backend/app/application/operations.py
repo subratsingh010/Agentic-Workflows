@@ -8,11 +8,14 @@ from app.adapters.rag import hybrid as hybrid_module
 from app.adapters.rag import policy_seed
 from app.adapters.rag.embeddings import get_embedding_model
 from app.adapters.rag.hybrid import (
+    HeuristicCrossEncoderReranker,
     InMemoryHybridRetriever,
     MilvusHybridRetriever,
     NativeMilvusHybridRetriever,
     POLICY_CHUNKS,
+    ScoreReranker,
 )
+from app.adapters.rag.llm import MockLLMGenerator, OllamaLLMGenerator, OpenAILLMGenerator
 from app.application.evaluation.policy_eval import (
     load_eval_cases,
     score_answer,
@@ -70,6 +73,32 @@ def _build_embedding_model(settings):
         model_name=settings.embedding_model,
         device=settings.embedding_device,
     )
+
+
+def _build_reranker(settings: Settings):
+    if not settings.rag_rerank_enabled:
+        return ScoreReranker()
+    provider = settings.rag_reranker_provider.lower()
+    if provider in {"heuristic", "cross_encoder", "heuristic_cross_encoder"}:
+        return HeuristicCrossEncoderReranker()
+    return ScoreReranker()
+
+
+def _build_llm(settings: Settings):
+    provider = settings.llm_provider.lower()
+    if provider == "openai":
+        return OpenAILLMGenerator(
+            model=settings.openai_model,
+            timeout_seconds=settings.openai_timeout_seconds,
+        )
+    if provider == "ollama":
+        return OllamaLLMGenerator(
+            base_url=settings.ollama_base_url,
+            model=settings.ollama_model,
+            timeout_seconds=settings.ollama_timeout_seconds,
+        )
+    return MockLLMGenerator()
+
 
 def _build_retriever(settings: Settings):
     common = {
@@ -129,6 +158,7 @@ def knowledge_status(settings: Settings) -> dict[str, Any]:
         "top_k": settings.rag_top_k,
         "embedding_provider": settings.embedding_provider,
         "embedding_model": settings.embedding_model,
+        "embedding_device": settings.embedding_device,
         "embedding_dim": settings.milvus_vector_dim,
     }
 
@@ -173,6 +203,8 @@ def ingest_seed_corpus(settings: Settings) -> dict[str, Any]:
 async def run_policy_eval(settings: Settings, top_k: int | None = None) -> dict[str, Any]:
     effective_top_k = top_k or settings.rag_top_k
     retriever = _build_retriever(settings)
+    reranker = _build_reranker(settings)
+    llm = _build_llm(settings)
     cases = load_eval_cases()
     actor = ActorContext(
         subject="eval-user",
@@ -184,21 +216,84 @@ async def run_policy_eval(settings: Settings, top_k: int | None = None) -> dict[
     )
     scores: list[dict[str, Any]] = []
     for case in cases:
-        chunks = await retriever.retrieve(case.question, actor, top_k=effective_top_k)
-        item = score_retrieval_case(case, chunks, top_k=effective_top_k)
-        expected_answer = case.ground_truth
-        item.update(score_answer(case, expected_answer, chunks, top_k=effective_top_k))
+        retrieved_chunks = await retriever.retrieve(case.question, actor, top_k=effective_top_k)
+        reranked_chunks = await reranker.rerank(case.question, retrieved_chunks)
+        answer_chunks = reranked_chunks[:effective_top_k]
+        generated_answer = await llm.answer_policy(case.question, answer_chunks)
+        item = score_retrieval_case(case, answer_chunks, top_k=effective_top_k)
+        item.update(score_answer(case, generated_answer, answer_chunks, top_k=effective_top_k))
+        item.update(
+            {
+                "generated_answer": generated_answer,
+                "ground_truth": case.ground_truth,
+                "pre_rerank_chunk_ids": [
+                    chunk.chunk_id for chunk in retrieved_chunks[:effective_top_k]
+                ],
+                "post_rerank_chunk_ids": [chunk.chunk_id for chunk in answer_chunks],
+                "retrieval_backend": (
+                    answer_chunks[0].metadata.get("retrieval_backend", settings.rag_backend)
+                    if answer_chunks
+                    else settings.rag_backend
+                ),
+                "reranker": (
+                    settings.rag_reranker_provider.lower()
+                    if settings.rag_rerank_enabled
+                    else "score"
+                ),
+            }
+        )
         scores.append(item)
 
     summary = summarize_scores(scores, effective_top_k)
+    pipeline = {
+        "embedding": {
+            "provider": settings.embedding_provider,
+            "model": settings.embedding_model,
+            "device": settings.embedding_device,
+            "dim": settings.milvus_vector_dim,
+        },
+        "ingestion": {
+            "source_dir": settings.policy_source_dir,
+            "chunk_size": settings.rag_chunk_size,
+            "chunk_overlap": settings.rag_chunk_overlap,
+            "chunks": len(POLICY_CHUNKS),
+        },
+        "retrieval": {
+            "backend": settings.rag_backend,
+            "native_milvus_hybrid": settings.milvus_native_hybrid,
+            "collection": (
+                settings.milvus_collection
+                if settings.rag_backend.lower() == "milvus"
+                else "in_memory"
+            ),
+            "mode": settings.rag_retrieval_mode.lower(),
+            "fusion": settings.rag_fusion_strategy.lower(),
+            "dense_weight": settings.rag_dense_weight,
+            "sparse_weight": settings.rag_sparse_weight,
+            "candidate_multiplier": settings.rag_candidate_multiplier,
+        },
+        "reranker": {
+            "enabled": settings.rag_rerank_enabled,
+            "provider": settings.rag_reranker_provider.lower(),
+        },
+        "llm": {
+            "provider": settings.llm_provider,
+            "model": (
+                settings.openai_model
+                if settings.llm_provider.lower() == "openai"
+                else settings.ollama_model
+            ),
+        },
+    }
     report = {
         "mode": settings.rag_backend,
         "retrieval_mode": settings.rag_retrieval_mode.lower(),
         "fusion_strategy": settings.rag_fusion_strategy.lower(),
+        "pipeline": pipeline,
         "summary": summary,
         "cases": scores,
     }
     path = eval_report_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return {"summary": summary, "output": str(path)}
+    return {"summary": summary, "pipeline": pipeline, "cases": scores[:5], "output": str(path)}

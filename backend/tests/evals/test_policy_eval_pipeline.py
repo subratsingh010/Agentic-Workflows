@@ -17,6 +17,7 @@ from app.application.evaluation.policy_eval import (
 )
 from app.application.ingestion import ChunkingConfig, chunk_markdown_document
 from app.domain.models import ActorContext
+from tests.support_embeddings import SupportEmbeddingModel
 
 
 def test_policy_seed_dataset_is_large_and_unique():
@@ -48,7 +49,7 @@ def test_policy_eval_metric_helpers():
 @pytest.mark.eval
 async def test_retriever_eval_pipeline_produces_summary():
     cases = load_eval_cases()[:12]
-    retriever = InMemoryHybridRetriever()
+    retriever = InMemoryHybridRetriever(embedding_model=SupportEmbeddingModel())
     actor = ActorContext(subject="eval", employee_id="EVAL-001", roles={"employee"})
 
     scores = []
@@ -124,6 +125,7 @@ async def test_retrieval_modes_return_ranked_chunks():
             retrieval_mode=retrieval_mode,
             fusion_strategy=fusion_strategy,
             candidate_multiplier=1,
+            embedding_model=SupportEmbeddingModel(),
         )
         chunks = await retriever.retrieve("What is the leave policy?", actor, top_k=5)
         assert len(chunks) == 5
@@ -132,7 +134,7 @@ async def test_retrieval_modes_return_ranked_chunks():
 
 @pytest.mark.asyncio
 async def test_heuristic_cross_encoder_reranker_updates_scores():
-    retriever = InMemoryHybridRetriever(candidate_multiplier=1)
+    retriever = InMemoryHybridRetriever(candidate_multiplier=1, embedding_model=SupportEmbeddingModel())
     actor = ActorContext(subject="eval", employee_id="EVAL-001", roles={"employee"})
     chunks = await retriever.retrieve("How do I request vacation leave?", actor, top_k=5)
     reranked = await HeuristicCrossEncoderReranker().rerank("How do I request vacation leave?", chunks)

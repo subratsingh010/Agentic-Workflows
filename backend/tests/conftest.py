@@ -14,7 +14,6 @@ import pytest
 
 from app.adapters.cache.memory import InMemoryIdempotencyStore, InMemoryRateLimiter
 from app.adapters.db.memory import InMemoryAuditRepository, InMemoryConversationRepository
-from app.adapters.rag.embeddings import get_embedding_model
 from app.adapters.rag.hybrid import InMemoryHybridRetriever, ScoreReranker
 from app.adapters.rag.llm import MockLLMGenerator
 from app.adapters.tools.mock_jira import MockJiraClient
@@ -23,6 +22,7 @@ from app.agent.graph import SingleEmployeeSupportAgent
 from app.application.policies import PolicyAuthorizer
 from app.application.ports import Authenticator
 from app.domain.models import ActorContext
+from tests.support_embeddings import SupportEmbeddingModel
 
 
 class TestAuthenticator(Authenticator):
@@ -53,7 +53,7 @@ def agent(conversations: InMemoryConversationRepository) -> SingleEmployeeSuppor
         audit=InMemoryAuditRepository(),
         idempotency=InMemoryIdempotencyStore(),
         rate_limiter=InMemoryRateLimiter(100),
-        retriever=InMemoryHybridRetriever(embedding_model=get_embedding_model()),
+        retriever=InMemoryHybridRetriever(embedding_model=SupportEmbeddingModel()),
         reranker=ScoreReranker(),
         llm=MockLLMGenerator(),
         jira=MockJiraClient(),

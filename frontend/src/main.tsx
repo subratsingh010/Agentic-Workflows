@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Activity, Database, Play, RefreshCw, Send, ShieldCheck } from "lucide-react";
 import { fetchKnowledgeStatus, ingestSeedCorpus, rebuildAndIngest, runPolicyEval, sendMessage } from "./api/client";
-import type { ChatResponse, KnowledgeStatus, RagOpsConfig } from "./types/chat";
+import type { ChatResponse, EvalRunResponse, KnowledgeStatus, RagOpsConfig } from "./types/chat";
 import "./styles.css";
 
 type Message = {
@@ -50,6 +50,7 @@ function App() {
   const [opsMessage, setOpsMessage] = useState("Ready");
   const [knowledge, setKnowledge] = useState<KnowledgeStatus | null>(null);
   const [opsConfig, setOpsConfig] = useState<RagOpsConfig>(defaultOpsConfig(null));
+  const [lastEval, setLastEval] = useState<EvalRunResponse | null>(null);
 
   async function refreshKnowledge() {
     const status = await fetchKnowledgeStatus();
@@ -104,6 +105,7 @@ function App() {
       } else if (action === "eval") {
         const result = await runPolicyEval(opsConfig);
         const hitAtK = result.summary[`hit_at_${result.summary.top_k}`] as number | undefined;
+        setLastEval(result);
         setOpsMessage(`Eval complete: hit@${result.summary.top_k} ${pct(hitAtK)}`);
       } else {
         setOpsMessage("Status refreshed");
@@ -331,6 +333,39 @@ function App() {
             </button>
           </div>
           <p className="mt-3 text-xs leading-5 text-zinc-500">{opsMessage}</p>
+          {lastEval ? (
+            <div className="mt-3 space-y-3 border-t border-zinc-200 pt-3 text-xs text-zinc-600">
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <div className="text-zinc-400">Embedding</div>
+                  <div className="font-medium text-zinc-800">{lastEval.pipeline.embedding.model}</div>
+                  <div>{lastEval.pipeline.embedding.dim} dim · {lastEval.pipeline.embedding.device}</div>
+                </div>
+                <div>
+                  <div className="text-zinc-400">Milvus</div>
+                  <div className="font-medium text-zinc-800">{lastEval.pipeline.retrieval.native_milvus_hybrid ? "native hybrid" : lastEval.pipeline.retrieval.backend}</div>
+                  <div>{lastEval.pipeline.retrieval.mode} · {lastEval.pipeline.retrieval.fusion}</div>
+                </div>
+                <div>
+                  <div className="text-zinc-400">Reranker</div>
+                  <div className="font-medium text-zinc-800">{lastEval.pipeline.reranker.provider}</div>
+                </div>
+                <div>
+                  <div className="text-zinc-400">LLM</div>
+                  <div className="font-medium text-zinc-800">{lastEval.pipeline.llm.provider}</div>
+                  <div>{lastEval.pipeline.llm.model}</div>
+                </div>
+              </div>
+              {lastEval.cases[0] ? (
+                <div className="rounded border border-zinc-200 p-2">
+                  <div className="font-medium text-zinc-800">Sample Eval Case</div>
+                  <div className="mt-1 line-clamp-2">{lastEval.cases[0].question}</div>
+                  <div className="mt-1 text-zinc-400">Top chunks: {(lastEval.cases[0].post_rerank_chunk_ids ?? lastEval.cases[0].retrieved_chunk_ids).slice(0, 3).join(", ")}</div>
+                  <div className="mt-1 line-clamp-3">{lastEval.cases[0].generated_answer}</div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           <p className="mt-2 text-xs leading-5 text-zinc-400">Collection: {knowledge?.collection ?? "--"}</p>
           <p className="mt-1 truncate text-xs leading-5 text-zinc-400">Source: {knowledge?.source_dir ?? "--"}</p>
         </aside>
