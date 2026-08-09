@@ -1,0 +1,7 @@
+{
+  "queues": [
+    { "name": "ingestion", "vhost": "/", "durable": true },
+    { "name": "ingestion.dlq", "vhost": "/", "durable": true }
+  ]
+}
+

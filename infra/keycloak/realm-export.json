@@ -1,0 +1,20 @@
+{
+  "realm": "employee-support",
+  "enabled": true,
+  "clients": [
+    {
+      "clientId": "employee-support-api",
+      "enabled": true,
+      "publicClient": true,
+      "directAccessGrantsEnabled": true
+    }
+  ],
+  "roles": {
+    "realm": [
+      { "name": "employee" },
+      { "name": "manager" },
+      { "name": "hr_admin" }
+    ]
+  }
+}
+

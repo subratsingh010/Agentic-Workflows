@@ -230,3 +230,4 @@ The app still keeps the in-memory BM25 fallback so local tests can run without D
 
 Dense retrieval uses Hugging Face SentenceTransformers. The default production-style setup is `EMBEDDING_PROVIDER=sentence_transformers` with `EMBEDDING_MODEL=BAAI/bge-small-en-v1.5` and `MILVUS_VECTOR_DIM=384`. Rebuild and ingest the Milvus collection after changing embedding model or dimension.
 # Agentic-Workflows
+# Agentic-Workflows
