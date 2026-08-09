@@ -1,7 +1,11 @@
 import httpx
+from opentelemetry import trace
 
 from app.application.ports import LLMGenerator
 from app.domain.models import Intent, RetrievedChunk
+
+
+tracer = trace.get_tracer(__name__)
 
 
 class RuleBasedIntentClassifier:
@@ -65,12 +69,16 @@ class OllamaLLMGenerator(LLMGenerator):
             f"Policy context:\n{context}\n\nEmployee question:\n{query}\n\nAnswer:"
         )
         try:
-            async with httpx.AsyncClient(timeout=self._timeout_seconds) as client:
-                response = await client.post(
-                    f"{self._base_url}/api/generate",
-                    json={"model": self._model, "prompt": prompt, "stream": False},
-                )
-                response.raise_for_status()
+            with tracer.start_as_current_span("llm.ollama.generate") as span:
+                span.set_attribute("llm.provider", "ollama")
+                span.set_attribute("llm.model", self._model)
+                span.set_attribute("rag.context_chunks", len(chunks[:5]))
+                async with httpx.AsyncClient(timeout=self._timeout_seconds) as client:
+                    response = await client.post(
+                        f"{self._base_url}/api/generate",
+                        json={"model": self._model, "prompt": prompt, "stream": False},
+                    )
+                    response.raise_for_status()
         except httpx.HTTPError:
             return await self._fallback.answer_policy(query, chunks)
         data = response.json()
@@ -109,12 +117,16 @@ class OpenAILLMGenerator(LLMGenerator):
         try:
             from openai import AsyncOpenAI
 
-            client = AsyncOpenAI(timeout=self._timeout_seconds)
-            response = await client.responses.create(
-                model=self._model,
-                instructions=instructions,
-                input=user_input,
-            )
+            with tracer.start_as_current_span("llm.openai.responses") as span:
+                span.set_attribute("llm.provider", "openai")
+                span.set_attribute("llm.model", self._model)
+                span.set_attribute("rag.context_chunks", len(chunks[:5]))
+                client = AsyncOpenAI(timeout=self._timeout_seconds)
+                response = await client.responses.create(
+                    model=self._model,
+                    instructions=instructions,
+                    input=user_input,
+                )
         except Exception:
             return await self._fallback.answer_policy(query, chunks)
         answer = str(getattr(response, "output_text", "")).strip()

@@ -23,6 +23,7 @@ from app.adapters.rag.llm import MockLLMGenerator, OllamaLLMGenerator, OpenAILLM
 from app.adapters.tools.mock_jira import MockJiraClient
 from app.adapters.tools.mock_leave import MockLeaveClient
 from app.agent.graph import SingleEmployeeSupportAgent
+from app.application.guardrails import FaithfulnessPolicy
 from app.application.policies import PolicyAuthorizer
 from app.core.config import get_settings
 
@@ -132,4 +133,8 @@ def get_agent() -> SingleEmployeeSupportAgent:
         jira=MockJiraClient(),
         leave=MockLeaveClient(),
         top_k=settings.rag_top_k,
+        faithfulness_policy=FaithfulnessPolicy(
+            min_score=settings.grounding_min_score,
+            min_citations=settings.grounding_min_citations,
+        ),
     )

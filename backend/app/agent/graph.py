@@ -1,9 +1,17 @@
+from functools import wraps
 from uuid import uuid4
 
+from opentelemetry import trace
 from pydantic import ValidationError
 
 from app.agent.state import AgentState
 from app.application.extraction import extract_leave_fields, extract_time_log_fields, missing_fields
+from app.application.guardrails import (
+    FaithfulnessPolicy,
+    assess_grounding,
+    blocked_answer,
+    build_citations,
+)
 from app.application.ports import (
     AuditRepository,
     Authenticator,
@@ -20,7 +28,7 @@ from app.application.ports import (
 from app.domain.models import (
     ChatRequest,
     ChatResponse,
-    Citation,
+    GroundingReport,
     Intent,
     JiraTimeLogRequest,
     LeaveApplicationRequest,
@@ -33,6 +41,9 @@ class AuthorizationError(RuntimeError):
 
 class ConfirmationRequired(RuntimeError):
     pass
+
+
+tracer = trace.get_tracer(__name__)
 
 
 class SingleEmployeeSupportAgent:
@@ -50,6 +61,7 @@ class SingleEmployeeSupportAgent:
         jira: JiraClient,
         leave: LeaveClient,
         top_k: int,
+        faithfulness_policy: FaithfulnessPolicy | None = None,
     ) -> None:
         self.authenticator = authenticator
         self.authorizer = authorizer
@@ -63,6 +75,7 @@ class SingleEmployeeSupportAgent:
         self.jira = jira
         self.leave = leave
         self.top_k = top_k
+        self.faithfulness_policy = faithfulness_policy or FaithfulnessPolicy()
         self._nodes = (
             self.validate_request,
             self.authenticate,
@@ -73,6 +86,7 @@ class SingleEmployeeSupportAgent:
             self.retrieve,
             self.rerank,
             self.generate,
+            self.faithfulness_guardrail,
             self.validate_tool,
             self.confirmation_guardrail,
             self.idempotency_check,
@@ -88,7 +102,7 @@ class SingleEmployeeSupportAgent:
             state = await self.graph.ainvoke(state)
         else:
             for node in self._nodes:
-                state = await node(state)
+                state = await self._run_node(node, state)
         response = state["response"]
         if request.idempotency_key:
             await self.idempotency.put(request.idempotency_key, response, ttl_seconds=86400)
@@ -104,7 +118,7 @@ class SingleEmployeeSupportAgent:
         graph = StateGraph(AgentState)
         previous = None
         for node in self._nodes:
-            graph.add_node(node.__name__, node)
+            graph.add_node(node.__name__, self._wrap_node(node))
             if previous is None:
                 graph.set_entry_point(node.__name__)
             else:
@@ -112,6 +126,38 @@ class SingleEmployeeSupportAgent:
             previous = node
         graph.add_edge(previous.__name__, END)
         return graph.compile()
+
+    def _wrap_node(self, node):
+        @wraps(node)
+        async def wrapped(state: AgentState) -> AgentState:
+            return await self._run_node(node, state)
+
+        return wrapped
+
+    async def _run_node(self, node, state: AgentState) -> AgentState:
+        with tracer.start_as_current_span(f"agent.{node.__name__}") as span:
+            request = state.get("request")
+            actor = state.get("actor")
+            intent = state.get("intent")
+            span.set_attribute("agent.node", node.__name__)
+            span.set_attribute("thread.id", state.get("thread_id", ""))
+            if request is not None:
+                span.set_attribute("request.has_thread_id", bool(request.thread_id))
+            if actor is not None:
+                span.set_attribute("actor.roles", ",".join(sorted(actor.roles)))
+            if intent is not None:
+                span.set_attribute("agent.intent", intent.value)
+            result = await node(state)
+            grounding = result.get("answer_grounding")
+            if grounding is not None:
+                span.set_attribute("grounding.grounded", grounding.grounded)
+                span.set_attribute("grounding.faithfulness_score", grounding.faithfulness_score)
+                span.set_attribute("grounding.guardrail_action", grounding.guardrail_action)
+            if "retrieved_chunks" in result:
+                span.set_attribute("rag.retrieved_chunks", len(result.get("retrieved_chunks", [])))
+            if "reranked_chunks" in result:
+                span.set_attribute("rag.reranked_chunks", len(result.get("reranked_chunks", [])))
+            return result
 
     async def validate_request(self, state: AgentState) -> AgentState:
         state["thread_id"] = state["request"].thread_id or str(uuid4())
@@ -174,6 +220,21 @@ class SingleEmployeeSupportAgent:
             state["answer"] = await self.llm.answer_policy(
                 state["request"].message, state.get("reranked_chunks", [])
             )
+        return state
+
+    async def faithfulness_guardrail(self, state: AgentState) -> AgentState:
+        if state["intent"] != Intent.POLICY_QA:
+            state["answer_grounding"] = GroundingReport(guardrail_action="not_applicable")
+            return state
+        chunks = state.get("reranked_chunks", [])[: self.top_k]
+        answer = state.get("answer", "")
+        grounding = assess_grounding(answer, chunks, self.faithfulness_policy)
+        state["answer_grounding"] = grounding
+        if not grounding.grounded:
+            state["answer"] = blocked_answer()
+            state["citations"] = []
+            return state
+        state["citations"] = build_citations(chunks, answer)
         return state
 
     async def validate_tool(self, state: AgentState) -> AgentState:
@@ -256,16 +317,11 @@ class SingleEmployeeSupportAgent:
                 thread_id=state["thread_id"],
                 intent=state.get("intent", Intent.UNKNOWN),
                 answer=state.get("answer", "I can help with policy questions, Jira time-log lookups, or leave applications."),
-                citations=[
-                    Citation(
-                        document_id=chunk.document_id,
-                        title=chunk.title,
-                        chunk_id=chunk.chunk_id,
-                        score=chunk.score,
-                        excerpt=chunk.text[:240],
-                    )
-                    for chunk in chunks
-                ],
+                citations=state.get("citations", build_citations(chunks, state.get("answer", ""))),
+                answer_grounding=state.get(
+                    "answer_grounding",
+                    GroundingReport(guardrail_action="not_applicable"),
+                ),
                 tool_result=state.get("tool_result"),
             )
         await self.conversations.append_message(

@@ -6,12 +6,30 @@ export type Intent =
   | "unsupported_tool"
   | "unknown";
 
+export type CitationEvidence = {
+  matched_terms: string[];
+  support_score: number;
+};
+
 export type Citation = {
   document_id: string;
   title: string;
   chunk_id: string;
   score: number;
   excerpt: string;
+  source_path?: string | null;
+  dense_score: number;
+  sparse_score: number;
+  evidence: CitationEvidence;
+};
+
+export type GroundingReport = {
+  grounded: boolean;
+  faithfulness_score: number;
+  citation_count: number;
+  supported_terms: string[];
+  unsupported_terms: string[];
+  guardrail_action: "pass" | "blocked" | "not_applicable";
 };
 
 export type ChatResponse = {
@@ -20,6 +38,7 @@ export type ChatResponse = {
   intent: Intent;
   answer: string;
   citations: Citation[];
+  answer_grounding: GroundingReport;
   requires_confirmation: boolean;
   missing_fields: string[];
   tool_result: Record<string, unknown> | null;

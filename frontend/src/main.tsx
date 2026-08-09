@@ -146,11 +146,16 @@ function App() {
                 >
                   {message.content}
                 </div>
+                {message.response?.answer_grounding ? (
+                  <div className="mt-2 text-left text-xs text-zinc-500">
+                    Grounding: {message.response.answer_grounding.guardrail_action} · faithfulness {pct(message.response.answer_grounding.faithfulness_score)}
+                  </div>
+                ) : null}
                 {message.response?.citations.length ? (
                   <div className="mt-2 space-y-1 text-left text-xs text-zinc-500">
                     {message.response.citations.map((citation) => (
                       <div key={citation.chunk_id}>
-                        {citation.title} · score {citation.score.toFixed(2)}
+                        {citation.title} · score {citation.score.toFixed(2)} · support {pct(citation.evidence.support_score)}
                       </div>
                     ))}
                   </div>

@@ -164,6 +164,13 @@ The React console includes a Knowledge & Eval panel. It shows policy corpus size
 
 Ops endpoints are under `/api/v1/ops/*` and still require a bearer token. In local development the scaffold accepts `Bearer dev-token`.
 
+
+## Observability and Guardrails
+
+The backend exposes Prometheus metrics at `/metrics` and instruments FastAPI, outbound HTTP calls, LLM calls, and each LangGraph node with OpenTelemetry spans. When `OTEL_EXPORTER_OTLP_ENDPOINT` is set, traces are exported to Tempo. When `PHOENIX_COLLECTOR_ENDPOINT` is set, the same trace stream is also exported to Phoenix using OTLP HTTP. Agent spans include node name, intent, retrieved/reranked chunk counts, grounding decision, faithfulness score, and guardrail action.
+
+Policy answers include typed citations with source path, dense/sparse scores, matched evidence terms, and per-citation support score. The `faithfulness_guardrail` node runs after generation and before response creation. If the generated answer is not sufficiently supported by retrieved chunks, the agent blocks the answer and returns a grounded-context fallback instead of exposing a hallucinated response. Tune this with `GROUNDING_MIN_SCORE` and `GROUNDING_MIN_CITATIONS`.
+
 ## Security Controls
 
 - OIDC/JWT verification using Keycloak JWKS

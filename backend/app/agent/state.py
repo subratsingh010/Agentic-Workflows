@@ -1,6 +1,14 @@
 from typing import Any, TypedDict
 
-from app.domain.models import ActorContext, ChatRequest, ChatResponse, Intent, RetrievedChunk
+from app.domain.models import (
+    ActorContext,
+    ChatRequest,
+    ChatResponse,
+    Citation,
+    GroundingReport,
+    Intent,
+    RetrievedChunk,
+)
 
 
 class AgentState(TypedDict, total=False):
@@ -15,6 +23,8 @@ class AgentState(TypedDict, total=False):
     answer: str
     tool_payload: dict[str, Any]
     tool_result: dict[str, Any]
+    citations: list[Citation]
+    answer_grounding: GroundingReport
     requires_confirmation: bool
     idempotent_response: ChatResponse
     response: ChatResponse

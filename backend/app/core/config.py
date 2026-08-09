@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     rag_reranker_provider: str = "score"
     rag_chunk_size: int = 120
     rag_chunk_overlap: int = 20
+    grounding_min_score: float = 0.35
+    grounding_min_citations: int = 1
     policy_source_dir: str = "data/policies/source"
     rate_limit_per_minute: int = 60
     otel_exporter_otlp_endpoint: str | None = None

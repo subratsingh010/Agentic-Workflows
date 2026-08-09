@@ -1,5 +1,7 @@
 import pytest
 
+from app.adapters.rag.llm import MockLLMGenerator
+from app.application.guardrails import FaithfulnessPolicy
 from app.domain.models import ChatRequest, Intent
 
 
@@ -9,6 +11,9 @@ async def test_policy_qa_returns_citations(agent):
 
     assert response.intent == Intent.POLICY_QA
     assert response.citations
+    assert response.answer_grounding.grounded
+    assert response.answer_grounding.guardrail_action == "pass"
+    assert response.citations[0].evidence.support_score >= 0
     assert "policy" in response.answer.lower()
 
 
@@ -36,3 +41,22 @@ async def test_unsupported_jira_ticket_creation_is_explained(agent):
 
     assert response.intent == Intent.UNSUPPORTED_TOOL
     assert "cannot create jira tickets" in response.answer.lower()
+
+
+class HallucinatingPolicyLLM(MockLLMGenerator):
+    async def answer_policy(self, query, chunks):
+        return "Employees receive unlimited submarine commuting benefits from the moon office."
+
+
+@pytest.mark.asyncio
+async def test_policy_qa_blocks_ungrounded_answer(agent):
+    agent.llm = HallucinatingPolicyLLM()
+    agent.faithfulness_policy = FaithfulnessPolicy(min_score=0.8, min_citations=1)
+
+    response = await agent.run(ChatRequest(message="What is the leave policy?"), "ok")
+
+    assert response.intent == Intent.POLICY_QA
+    assert not response.answer_grounding.grounded
+    assert response.answer_grounding.guardrail_action == "blocked"
+    assert not response.citations
+    assert "not have enough grounded policy context" in response.answer.lower()

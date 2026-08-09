@@ -33,12 +33,30 @@ class ChatRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class CitationEvidence(BaseModel):
+    matched_terms: list[str] = Field(default_factory=list)
+    support_score: float = 0
+
+
 class Citation(BaseModel):
     document_id: str
     title: str
     chunk_id: str
     score: float
     excerpt: str
+    source_path: str | None = None
+    dense_score: float = 0
+    sparse_score: float = 0
+    evidence: CitationEvidence = Field(default_factory=CitationEvidence)
+
+
+class GroundingReport(BaseModel):
+    grounded: bool = True
+    faithfulness_score: float = 1
+    citation_count: int = 0
+    supported_terms: list[str] = Field(default_factory=list)
+    unsupported_terms: list[str] = Field(default_factory=list)
+    guardrail_action: Literal["pass", "blocked", "not_applicable"] = "not_applicable"
 
 
 class ChatResponse(BaseModel):
@@ -47,6 +65,7 @@ class ChatResponse(BaseModel):
     intent: Intent
     answer: str
     citations: list[Citation] = Field(default_factory=list)
+    answer_grounding: GroundingReport = Field(default_factory=GroundingReport)
     requires_confirmation: bool = False
     missing_fields: list[str] = Field(default_factory=list)
     tool_result: dict[str, Any] | None = None

@@ -9,6 +9,8 @@ os.environ.setdefault("RAG_BACKEND", "memory")
 os.environ.setdefault("LLM_PROVIDER", "mock")
 os.environ.setdefault("EMBEDDING_PROVIDER", "sentence_transformers")
 os.environ.setdefault("MILVUS_VECTOR_DIM", "384")
+os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = ""
+os.environ["PHOENIX_COLLECTOR_ENDPOINT"] = ""
 
 import pytest
 
