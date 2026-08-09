@@ -1,8 +1,35 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from app.domain.models import Citation, CitationEvidence, GroundingReport, RetrievedChunk
+
+INJECTION_PATTERNS = (
+    re.compile(r"ignore\s+(all\s+)?(previous|prior|above)\s+instructions", re.IGNORECASE),
+    re.compile(r"disregard\s+(all\s+)?(previous|prior|above)\s+instructions", re.IGNORECASE),
+    re.compile(r"reveal\s+(the\s+)?(system|developer)\s+prompt", re.IGNORECASE),
+    re.compile(r"act\s+as\s+(an?\s+)?(admin|root|system)", re.IGNORECASE),
+    re.compile(r"tool\s*:\s*execute", re.IGNORECASE),
+)
+
+
+def detect_prompt_injection(value: str) -> str | None:
+    for pattern in INJECTION_PATTERNS:
+        if pattern.search(value):
+            return pattern.pattern
+    return None
+
+
+def filter_indirect_prompt_injection(chunks: list[RetrievedChunk]) -> tuple[list[RetrievedChunk], list[RetrievedChunk]]:
+    allowed: list[RetrievedChunk] = []
+    blocked: list[RetrievedChunk] = []
+    for chunk in chunks:
+        if detect_prompt_injection(chunk.text):
+            blocked.append(chunk)
+        else:
+            allowed.append(chunk)
+    return allowed, blocked
 
 _STOPWORDS = {
     "a",

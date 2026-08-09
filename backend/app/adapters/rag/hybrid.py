@@ -1,10 +1,19 @@
 import math
+import time
 from collections import Counter
 from functools import cached_property
 from typing import Literal
 
 from app.adapters.rag.embeddings import EmbeddingModel
 from app.adapters.rag.policy_seed import POLICY_CHUNKS
+from app.adapters.observability.metrics import (
+    RAG_ERRORS,
+    RAG_RERANK_SECONDS,
+    RAG_RETRIEVAL_SECONDS,
+    RAG_RETRIEVED_CHUNKS,
+    increment,
+    observe_histogram,
+)
 from app.application.ports import PolicyRetriever, Reranker
 from app.domain.models import ActorContext, RetrievedChunk
 
@@ -24,6 +33,45 @@ def _token_list(text: str) -> list[str]:
         if token.strip(".,!?;:()[]{}\"'")
     ]
 
+
+
+def _first_specific(values: list[str], generic: str) -> str:
+    for value in values:
+        if value and value != generic:
+            return value
+    return ""
+
+
+def _access_fields(chunk: RetrievedChunk) -> dict[str, object]:
+    countries = [str(value) for value in chunk.metadata.get("countries", [])]
+    departments = [str(value) for value in chunk.metadata.get("departments", [])]
+    return {
+        "country_global": not countries or "global" in countries,
+        "country_code": _first_specific(countries, "global"),
+        "department_all": not departments or "all" in departments,
+        "department_code": _first_specific(departments, "all"),
+    }
+
+
+def _milvus_literal(value: str | None) -> str:
+    return (value or "").replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _milvus_access_expr(actor: ActorContext) -> str:
+    country = _milvus_literal(actor.country)
+    department = _milvus_literal(actor.department)
+    return (
+        f'(country_global == true or country_code == "{country}") '
+        f'and (department_all == true or department_code == "{department}")'
+    )
+
+
+def _actor_can_access_chunk(actor: ActorContext, chunk: RetrievedChunk) -> bool:
+    countries = set(chunk.metadata.get("countries", []))
+    departments = set(chunk.metadata.get("departments", []))
+    country_ok = not countries or actor.country in countries or "global" in countries
+    department_ok = not departments or actor.department in departments or "all" in departments
+    return country_ok and department_ok
 
 
 def cosine_score(left: list[float], right: list[float]) -> float:
@@ -128,34 +176,46 @@ class InMemoryHybridRetriever(PolicyRetriever):
         if embedding_model is None:
             raise ValueError("embedding_model is required")
         self._embeddings = embedding_model
-        self._bm25 = BM25SparseScorer(POLICY_CHUNKS, bm25_k1, bm25_b)
+        self._bm25_k1 = bm25_k1
+        self._bm25_b = bm25_b
 
     async def retrieve(self, query: str, actor: ActorContext, top_k: int) -> list[RetrievedChunk]:
-        candidate_limit = max(top_k * self._candidate_multiplier, top_k)
-        query_vector = self._embeddings.embed_query(query)
-        sparse_scores = self._bm25.scores(query)
-        document_vectors = self._embeddings.embed_documents([chunk.text for chunk in POLICY_CHUNKS])
-        candidates: list[RetrievedChunk] = []
-        for source, document_vector in zip(POLICY_CHUNKS, document_vectors, strict=False):
-            chunk = source.model_copy(deep=True)
-            chunk.dense_score = cosine_score(query_vector, document_vector)
-            chunk.sparse_score = sparse_scores.get(chunk.chunk_id, 0.0)
-            candidates.append(chunk)
+        start = time.perf_counter()
+        labels = {"backend": "memory", "mode": self._retrieval_mode}
+        try:
+            candidate_limit = max(top_k * self._candidate_multiplier, top_k)
+            query_vector = self._embeddings.embed_query(query)
+            accessible_chunks = [chunk for chunk in POLICY_CHUNKS if _actor_can_access_chunk(actor, chunk)]
+            sparse_scores = BM25SparseScorer(accessible_chunks, self._bm25_k1, self._bm25_b).scores(query)
+            document_vectors = self._embeddings.embed_documents([chunk.text for chunk in accessible_chunks])
+            candidates: list[RetrievedChunk] = []
+            for source, document_vector in zip(accessible_chunks, document_vectors, strict=False):
+                chunk = source.model_copy(deep=True)
+                chunk.dense_score = cosine_score(query_vector, document_vector)
+                chunk.sparse_score = sparse_scores.get(chunk.chunk_id, 0.0)
+                candidates.append(chunk)
 
-        dense_ranks = _rank_map(candidates, "dense_score")
-        sparse_ranks = _rank_map(candidates, "sparse_score")
-        for chunk in candidates:
-            chunk.score = _fused_score(
-                chunk,
-                dense_ranks.get(chunk.chunk_id),
-                sparse_ranks.get(chunk.chunk_id),
-                self._dense_weight,
-                self._sparse_weight,
-                self._fusion_strategy,
-                self._retrieval_mode,
-                self._rrf_k,
-            )
-        return sorted(candidates, key=lambda item: item.score, reverse=True)[:candidate_limit]
+            dense_ranks = _rank_map(candidates, "dense_score")
+            sparse_ranks = _rank_map(candidates, "sparse_score")
+            for chunk in candidates:
+                chunk.score = _fused_score(
+                    chunk,
+                    dense_ranks.get(chunk.chunk_id),
+                    sparse_ranks.get(chunk.chunk_id),
+                    self._dense_weight,
+                    self._sparse_weight,
+                    self._fusion_strategy,
+                    self._retrieval_mode,
+                    self._rrf_k,
+                )
+            results = sorted(candidates, key=lambda item: item.score, reverse=True)[:candidate_limit]
+            observe_histogram(RAG_RETRIEVED_CHUNKS, labels, len(results))
+            return results
+        except Exception:
+            increment(RAG_ERRORS, {"backend": "memory", "stage": "retrieve"})
+            raise
+        finally:
+            observe_histogram(RAG_RETRIEVAL_SECONDS, labels, time.perf_counter() - start)
 
 
 class MilvusHybridRetriever(PolicyRetriever):
@@ -189,7 +249,8 @@ class MilvusHybridRetriever(PolicyRetriever):
         if embedding_model is None:
             raise ValueError("embedding_model is required")
         self._embeddings = embedding_model
-        self._bm25 = BM25SparseScorer(POLICY_CHUNKS, bm25_k1, bm25_b)
+        self._bm25_k1 = bm25_k1
+        self._bm25_b = bm25_b
         self._fallback = fallback
 
     async def retrieve(self, query: str, actor: ActorContext, top_k: int) -> list[RetrievedChunk]:
@@ -199,6 +260,8 @@ class MilvusHybridRetriever(PolicyRetriever):
                     "Sparse-only Milvus search requires the native Milvus hybrid retriever"
                 )
             return await self._fallback.retrieve(query, actor, top_k)
+        start = time.perf_counter()
+        labels = {"backend": "milvus_compat", "mode": self._retrieval_mode}
         candidate_limit = max(top_k * self._candidate_multiplier, top_k)
         try:
             collection = self._collection
@@ -209,13 +272,15 @@ class MilvusHybridRetriever(PolicyRetriever):
                 param={"metric_type": "COSINE", "params": {"nprobe": 10}},
                 limit=candidate_limit,
                 output_fields=["document_id", "title", "chunk_id", "text", "metadata_json"],
+                expr=_milvus_access_expr(actor),
             )[0]
         except Exception:
+            increment(RAG_ERRORS, {"backend": "milvus_compat", "stage": "search"})
             if self._fallback is None:
                 raise
             return await self._fallback.retrieve(query, actor, top_k)
 
-        sparse_scores = self._bm25.scores(query)
+        sparse_scores = BM25SparseScorer(POLICY_CHUNKS, self._bm25_k1, self._bm25_b).scores(query)
         by_id: dict[str, RetrievedChunk] = {}
         for hit in hits:
             entity = hit.entity
@@ -231,9 +296,10 @@ class MilvusHybridRetriever(PolicyRetriever):
                 sparse_score=sparse_scores.get(chunk_id, 0.0),
             )
 
-        # Add strong sparse candidates that may not appear in the dense candidate set.
         sparse_candidates = sorted(
-            POLICY_CHUNKS, key=lambda chunk: sparse_scores.get(chunk.chunk_id, 0.0), reverse=True
+            (chunk for chunk in POLICY_CHUNKS if _actor_can_access_chunk(actor, chunk)),
+            key=lambda chunk: sparse_scores.get(chunk.chunk_id, 0.0),
+            reverse=True,
         )[:candidate_limit]
         for source in sparse_candidates:
             if source.chunk_id not in by_id:
@@ -256,7 +322,10 @@ class MilvusHybridRetriever(PolicyRetriever):
                 self._retrieval_mode,
                 self._rrf_k,
             )
-        return sorted(candidates, key=lambda item: item.score, reverse=True)[:candidate_limit]
+        results = sorted(candidates, key=lambda item: item.score, reverse=True)[:candidate_limit]
+        observe_histogram(RAG_RETRIEVED_CHUNKS, labels, len(results))
+        observe_histogram(RAG_RETRIEVAL_SECONDS, labels, time.perf_counter() - start)
+        return results
 
     @cached_property
     def _collection(self):
@@ -265,7 +334,17 @@ class MilvusHybridRetriever(PolicyRetriever):
         connections.connect(alias="default", host=self._host, port=str(self._port))
         if utility.has_collection(self._collection_name):
             existing = Collection(self._collection_name)
-            if existing.num_entities != len(POLICY_CHUNKS):
+            field_names = {field.name for field in existing.schema.fields}
+            dense_field = next((field for field in existing.schema.fields if field.name == "embedding"), None)
+            dense_dim = int((getattr(dense_field, "params", {}) or {}).get("dim", 0)) if dense_field else 0
+            expected_schema = {
+                "embedding",
+                "country_global",
+                "country_code",
+                "department_all",
+                "department_code",
+            }.issubset(field_names)
+            if existing.num_entities != len(POLICY_CHUNKS) or dense_dim != self._vector_dim or not expected_schema:
                 utility.drop_collection(self._collection_name)
 
         if not utility.has_collection(self._collection_name):
@@ -276,6 +355,10 @@ class MilvusHybridRetriever(PolicyRetriever):
                 FieldSchema(name="chunk_id", dtype=DataType.VARCHAR, max_length=128),
                 FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=4096),
                 FieldSchema(name="metadata_json", dtype=DataType.JSON),
+                FieldSchema(name="country_global", dtype=DataType.BOOL),
+                FieldSchema(name="country_code", dtype=DataType.VARCHAR, max_length=32),
+                FieldSchema(name="department_all", dtype=DataType.BOOL),
+                FieldSchema(name="department_code", dtype=DataType.VARCHAR, max_length=64),
                 FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=self._vector_dim),
             ]
             schema = CollectionSchema(fields=fields, description="Employee policy chunks")
@@ -310,6 +393,7 @@ class MilvusHybridRetriever(PolicyRetriever):
                 "chunk_id": chunk.chunk_id,
                 "text": chunk.text,
                 "metadata_json": chunk.metadata,
+                **_access_fields(chunk),
                 "embedding": vector,
             }
             for chunk, vector in zip(
@@ -366,14 +450,16 @@ class NativeMilvusHybridRetriever(PolicyRetriever):
         self._fallback = fallback
 
     async def retrieve(self, query: str, actor: ActorContext, top_k: int) -> list[RetrievedChunk]:
+        start = time.perf_counter()
+        labels = {"backend": "milvus_native_hybrid", "mode": self._retrieval_mode}
         candidate_limit = max(top_k * self._candidate_multiplier, top_k)
         try:
             collection = self._collection
             requests = []
             if self._retrieval_mode in {"dense", "hybrid"}:
-                requests.append(self._dense_request(query, candidate_limit))
+                requests.append(self._dense_request(query, candidate_limit, actor))
             if self._retrieval_mode in {"sparse", "hybrid"}:
-                requests.append(self._sparse_request(query, candidate_limit))
+                requests.append(self._sparse_request(query, candidate_limit, actor))
             ranker = self._ranker()
             hits = collection.hybrid_search(
                 reqs=requests,
@@ -382,6 +468,7 @@ class NativeMilvusHybridRetriever(PolicyRetriever):
                 output_fields=["document_id", "title", "chunk_id", "text", "metadata_json"],
             )[0]
         except Exception:
+            increment(RAG_ERRORS, {"backend": "milvus_native_hybrid", "stage": "hybrid_search"})
             if self._fallback is None:
                 raise
             return await self._fallback.retrieve(query, actor, top_k)
@@ -404,6 +491,8 @@ class NativeMilvusHybridRetriever(PolicyRetriever):
                     score=max(float(hit.score), 0.0),
                 )
             )
+        observe_histogram(RAG_RETRIEVED_CHUNKS, labels, len(chunks))
+        observe_histogram(RAG_RETRIEVAL_SECONDS, labels, time.perf_counter() - start)
         return chunks
 
     @cached_property
@@ -416,7 +505,7 @@ class NativeMilvusHybridRetriever(PolicyRetriever):
             field_names = {field.name for field in existing.schema.fields}
             dense_field = next((field for field in existing.schema.fields if field.name == "dense"), None)
             dense_dim = int((getattr(dense_field, "params", {}) or {}).get("dim", 0)) if dense_field else 0
-            expected_schema = {"dense", "sparse", "text"}.issubset(field_names)
+            expected_schema = {"dense", "sparse", "text", "country_global", "country_code", "department_all", "department_code"}.issubset(field_names)
             expected_dim = dense_dim == self._vector_dim
             expected_count = int(existing.num_entities) == len(POLICY_CHUNKS)
             if expected_schema and expected_dim and expected_count:
@@ -439,6 +528,10 @@ class NativeMilvusHybridRetriever(PolicyRetriever):
             FieldSchema(name="chunk_id", dtype=DataType.VARCHAR, max_length=128),
             FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=4096, enable_analyzer=True),
             FieldSchema(name="metadata_json", dtype=DataType.JSON),
+            FieldSchema(name="country_global", dtype=DataType.BOOL),
+            FieldSchema(name="country_code", dtype=DataType.VARCHAR, max_length=32),
+            FieldSchema(name="department_all", dtype=DataType.BOOL),
+            FieldSchema(name="department_code", dtype=DataType.VARCHAR, max_length=64),
             FieldSchema(name="dense", dtype=DataType.FLOAT_VECTOR, dim=self._vector_dim),
             FieldSchema(name="sparse", dtype=DataType.SPARSE_FLOAT_VECTOR),
         ]
@@ -462,7 +555,7 @@ class NativeMilvusHybridRetriever(PolicyRetriever):
         )
         return collection
 
-    def _dense_request(self, query: str, limit: int):
+    def _dense_request(self, query: str, limit: int, actor: ActorContext):
         from pymilvus import AnnSearchRequest
 
         return AnnSearchRequest(
@@ -470,9 +563,10 @@ class NativeMilvusHybridRetriever(PolicyRetriever):
             anns_field="dense",
             param={"metric_type": "COSINE", "params": {"nprobe": 10}},
             limit=limit,
+            expr=_milvus_access_expr(actor),
         )
 
-    def _sparse_request(self, query: str, limit: int):
+    def _sparse_request(self, query: str, limit: int, actor: ActorContext):
         from pymilvus import AnnSearchRequest
 
         return AnnSearchRequest(
@@ -480,6 +574,7 @@ class NativeMilvusHybridRetriever(PolicyRetriever):
             anns_field="sparse",
             param={"metric_type": "BM25", "params": {}},
             limit=limit,
+            expr=_milvus_access_expr(actor),
         )
 
     def _ranker(self):
@@ -511,6 +606,7 @@ class NativeMilvusHybridRetriever(PolicyRetriever):
                 "chunk_id": chunk.chunk_id,
                 "text": chunk.text,
                 "metadata_json": chunk.metadata,
+                **_access_fields(chunk),
                 "dense": vector,
             }
             for chunk, vector in zip(
@@ -525,7 +621,11 @@ class NativeMilvusHybridRetriever(PolicyRetriever):
 
 class ScoreReranker(Reranker):
     async def rerank(self, query: str, chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
-        return sorted(chunks, key=lambda item: item.score, reverse=True)
+        start = time.perf_counter()
+        try:
+            return sorted(chunks, key=lambda item: item.score, reverse=True)
+        finally:
+            observe_histogram(RAG_RERANK_SECONDS, {"provider": "score"}, time.perf_counter() - start)
 
 
 class HeuristicCrossEncoderReranker(Reranker):
@@ -534,8 +634,12 @@ class HeuristicCrossEncoderReranker(Reranker):
         self._semantic_weight = semantic_weight
 
     async def rerank(self, query: str, chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
-        for chunk in chunks:
-            semantic = lexical_score(query, f"{chunk.title} {chunk.text}")
-            chunk.metadata = chunk.metadata | {"reranker": "heuristic_cross_encoder", "rerank_score": semantic}
-            chunk.score = chunk.score * self._base_weight + semantic * self._semantic_weight
-        return sorted(chunks, key=lambda item: item.score, reverse=True)
+        start = time.perf_counter()
+        try:
+            for chunk in chunks:
+                semantic = lexical_score(query, f"{chunk.title} {chunk.text}")
+                chunk.metadata = chunk.metadata | {"reranker": "heuristic_cross_encoder", "rerank_score": semantic}
+                chunk.score = chunk.score * self._base_weight + semantic * self._semantic_weight
+            return sorted(chunks, key=lambda item: item.score, reverse=True)
+        finally:
+            observe_histogram(RAG_RERANK_SECONDS, {"provider": "heuristic_cross_encoder"}, time.perf_counter() - start)

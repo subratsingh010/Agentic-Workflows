@@ -3,7 +3,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, Field, model_validator
 
-from app.adapters.auth.keycloak import AuthenticationError
+from app.adapters.auth.keycloak import AuthenticationError, KeycloakJWTAuthenticator
 from app.adapters.cache.memory import RateLimitExceeded
 from app.agent.graph import AuthorizationError, SingleEmployeeSupportAgent
 from app.api.dependencies import get_agent
@@ -15,7 +15,7 @@ from app.application.operations import (
     settings_with_overrides,
 )
 from app.core.config import get_settings
-from app.domain.models import ChatRequest, ChatResponse
+from app.domain.models import ActorContext, ChatRequest, ChatResponse
 
 router = APIRouter()
 
@@ -45,7 +45,7 @@ class OpsRagConfig(BaseModel):
     dense_weight: float = Field(default=0.6, ge=0, le=1)
     sparse_weight: float = Field(default=0.4, ge=0, le=1)
     candidate_multiplier: int = Field(default=4, ge=1, le=20)
-    embedding_provider: Literal["sentence_transformers"] | None = None
+    embedding_provider: Literal["sentence_transformers", "fastembed"] | None = None
     embedding_model: str | None = None
     embedding_device: str | None = None
     embedding_dim: int | None = Field(default=None, ge=16, le=4096)
@@ -59,7 +59,7 @@ class OpsRagConfig(BaseModel):
         return self
 
     def to_settings_overrides(self) -> dict:
-        return {
+        values = {
             "rag_chunk_size": self.chunk_size,
             "rag_chunk_overlap": self.chunk_overlap,
             "rag_retrieval_mode": self.retrieval_mode,
@@ -75,6 +75,7 @@ class OpsRagConfig(BaseModel):
             "embedding_device": self.embedding_device,
             "milvus_vector_dim": self.embedding_dim,
         }
+        return {key: value for key, value in values.items() if value is not None}
 
 
 def bearer_token(authorization: str = Header(default="")) -> str:
@@ -82,6 +83,23 @@ def bearer_token(authorization: str = Header(default="")) -> str:
     if not authorization.startswith(prefix):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="missing bearer token")
     return authorization.removeprefix(prefix)
+
+
+async def ops_actor(token: str = Depends(bearer_token)) -> ActorContext:
+    settings = get_settings()
+    authenticator = KeycloakJWTAuthenticator(
+        settings.keycloak_issuer,
+        settings.keycloak_audience,
+        settings.jwks_cache_seconds,
+        allow_dev_token=settings.allow_dev_token,
+    )
+    try:
+        actor = await authenticator.authenticate(token)
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+    if not actor.roles.intersection({"admin", "platform_admin", "hr_admin"}):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="admin role required")
+    return actor
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -101,14 +119,14 @@ async def chat(
 
 
 @router.get("/ops/knowledge")
-async def ops_knowledge(token: str = Depends(bearer_token)) -> dict:
-    _ = token
+async def ops_knowledge(actor: ActorContext = Depends(ops_actor)) -> dict:
+    _ = actor
     return knowledge_status(get_settings())
 
 
 @router.post("/ops/ingest")
-async def ops_ingest(config: OpsRagConfig | None = None, token: str = Depends(bearer_token)) -> dict:
-    _ = token
+async def ops_ingest(config: OpsRagConfig | None = None, actor: ActorContext = Depends(ops_actor)) -> dict:
+    _ = actor
     settings = settings_with_overrides(get_settings(), config.to_settings_overrides() if config else None)
     try:
         return ingest_seed_corpus(settings)
@@ -117,8 +135,8 @@ async def ops_ingest(config: OpsRagConfig | None = None, token: str = Depends(be
 
 
 @router.post("/ops/rebuild")
-async def ops_rebuild(config: OpsRagConfig, token: str = Depends(bearer_token)) -> dict:
-    _ = token
+async def ops_rebuild(config: OpsRagConfig, actor: ActorContext = Depends(ops_actor)) -> dict:
+    _ = actor
     settings = settings_with_overrides(get_settings(), config.to_settings_overrides())
     try:
         rebuild = rebuild_seed_corpus(settings)
@@ -130,8 +148,8 @@ async def ops_rebuild(config: OpsRagConfig, token: str = Depends(bearer_token)) 
 
 
 @router.post("/ops/eval")
-async def ops_eval(config: OpsRagConfig | None = None, top_k: int | None = None, token: str = Depends(bearer_token)) -> dict:
-    _ = token
+async def ops_eval(config: OpsRagConfig | None = None, top_k: int | None = None, actor: ActorContext = Depends(ops_actor)) -> dict:
+    _ = actor
     settings = settings_with_overrides(get_settings(), config.to_settings_overrides() if config else None)
     effective_top_k = config.top_k if config else top_k
     try:

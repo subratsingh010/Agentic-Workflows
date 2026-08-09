@@ -30,6 +30,7 @@ class ChatRequest(BaseModel):
     thread_id: str | None = None
     idempotency_key: str | None = Field(default=None, max_length=128)
     confirm: bool = False
+    confirmation_token: str | None = Field(default=None, max_length=128)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -67,8 +68,19 @@ class ChatResponse(BaseModel):
     citations: list[Citation] = Field(default_factory=list)
     answer_grounding: GroundingReport = Field(default_factory=GroundingReport)
     requires_confirmation: bool = False
+    confirmation_token: str | None = None
     missing_fields: list[str] = Field(default_factory=list)
     tool_result: dict[str, Any] | None = None
+
+
+class PendingAction(BaseModel):
+    token: str
+    thread_id: str
+    actor_subject: str
+    intent: Intent
+    tool_payload: dict[str, Any]
+    message: str
+    expires_at: datetime
 
 
 class PolicyChunk(BaseModel):

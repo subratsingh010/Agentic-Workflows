@@ -75,6 +75,7 @@ def _build_embedding_model(settings):
     return get_embedding_model(
         model_name=settings.embedding_model,
         device=settings.embedding_device,
+        provider=settings.embedding_provider,
     )
 
 def _build_retriever():
@@ -121,6 +122,7 @@ def get_agent() -> SingleEmployeeSupportAgent:
             settings.keycloak_issuer,
             settings.keycloak_audience,
             settings.jwks_cache_seconds,
+            allow_dev_token=settings.allow_dev_token,
         ),
         authorizer=PolicyAuthorizer(),
         conversations=conversations,
@@ -137,4 +139,5 @@ def get_agent() -> SingleEmployeeSupportAgent:
             min_score=settings.grounding_min_score,
             min_citations=settings.grounding_min_citations,
         ),
+        confirmation_ttl_seconds=settings.confirmation_ttl_seconds,
     )

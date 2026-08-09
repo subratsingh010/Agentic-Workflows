@@ -28,6 +28,19 @@ class CheckpointRow(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class PendingActionRow(Base):
+    __tablename__ = "pending_actions"
+
+    token: Mapped[str] = mapped_column(String(128), primary_key=True)
+    thread_id: Mapped[str] = mapped_column(String(128), index=True)
+    actor_subject: Mapped[str] = mapped_column(String(128), index=True)
+    intent: Mapped[str] = mapped_column(String(64))
+    tool_payload: Mapped[dict] = mapped_column(JSON)
+    message: Mapped[str] = mapped_column(Text)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class AuditEventRow(Base):
     __tablename__ = "audit_events"
 

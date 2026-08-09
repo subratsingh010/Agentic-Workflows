@@ -3,6 +3,10 @@ services:
     build:
       context: ./backend
     env_file: .env
+    environment:
+      EMBEDDING_PROVIDER: fastembed
+      EMBEDDING_MODEL: BAAI/bge-small-en-v1.5
+      MILVUS_VECTOR_DIM: 384
     ports: ["8000:8000"]
     depends_on: [postgres, redis, rabbitmq, milvus, keycloak]
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
@@ -11,6 +15,10 @@ services:
     build:
       context: ./backend
     env_file: .env
+    environment:
+      EMBEDDING_PROVIDER: fastembed
+      EMBEDDING_MODEL: BAAI/bge-small-en-v1.5
+      MILVUS_VECTOR_DIM: 384
     depends_on: [backend, rabbitmq, redis, postgres, milvus]
     command: celery -A app.workers.celery_app worker --loglevel=INFO
 

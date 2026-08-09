@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any
 
+from opentelemetry import trace
+
+from app.adapters.observability.metrics import EVAL_SCORE, EVAL_SECONDS, observe_histogram, set_gauge
 from app.adapters.rag import hybrid as hybrid_module
 from app.adapters.rag import policy_seed
 from app.adapters.rag.embeddings import get_embedding_model
@@ -25,6 +29,8 @@ from app.application.evaluation.policy_eval import (
 from app.application.ingestion import ChunkingConfig, build_chunks_from_source_dir, write_chunks_jsonl
 from app.core.config import Settings
 from app.domain.models import ActorContext
+
+tracer = trace.get_tracer(__name__)
 
 
 def project_root() -> Path:
@@ -72,6 +78,7 @@ def _build_embedding_model(settings):
     return get_embedding_model(
         model_name=settings.embedding_model,
         device=settings.embedding_device,
+        provider=settings.embedding_provider,
     )
 
 
@@ -122,6 +129,24 @@ def _build_retriever(settings: Settings):
             **common,
         )
     return InMemoryHybridRetriever(**common)
+
+
+async def _score_ragas_context(case, chunks) -> dict[str, float]:
+    try:
+        from ragas.dataset_schema import SingleTurnSample
+        from ragas.metrics import NonLLMContextPrecisionWithReference, NonLLMContextRecall
+    except Exception:
+        return {"ragas_context_precision": 0.0, "ragas_context_recall": 0.0}
+    sample = SingleTurnSample(
+        retrieved_contexts=[chunk.text for chunk in chunks],
+        reference_contexts=[case.ground_truth],
+    )
+    precision = await NonLLMContextPrecisionWithReference().single_turn_ascore(sample)
+    recall = await NonLLMContextRecall().single_turn_ascore(sample)
+    return {
+        "ragas_context_precision": float(precision),
+        "ragas_context_recall": float(recall),
+    }
 
 
 def _latest_eval_summary() -> dict[str, Any] | None:
@@ -201,6 +226,7 @@ def ingest_seed_corpus(settings: Settings) -> dict[str, Any]:
 
 
 async def run_policy_eval(settings: Settings, top_k: int | None = None) -> dict[str, Any]:
+    start = time.perf_counter()
     effective_top_k = top_k or settings.rag_top_k
     retriever = _build_retriever(settings)
     reranker = _build_reranker(settings)
@@ -215,34 +241,47 @@ async def run_policy_eval(settings: Settings, top_k: int | None = None) -> dict[
         roles={"employee"},
     )
     scores: list[dict[str, Any]] = []
-    for case in cases:
-        retrieved_chunks = await retriever.retrieve(case.question, actor, top_k=effective_top_k)
-        reranked_chunks = await reranker.rerank(case.question, retrieved_chunks)
-        answer_chunks = reranked_chunks[:effective_top_k]
-        generated_answer = await llm.answer_policy(case.question, answer_chunks)
-        item = score_retrieval_case(case, answer_chunks, top_k=effective_top_k)
-        item.update(score_answer(case, generated_answer, answer_chunks, top_k=effective_top_k))
-        item.update(
-            {
-                "generated_answer": generated_answer,
-                "ground_truth": case.ground_truth,
-                "pre_rerank_chunk_ids": [
-                    chunk.chunk_id for chunk in retrieved_chunks[:effective_top_k]
-                ],
-                "post_rerank_chunk_ids": [chunk.chunk_id for chunk in answer_chunks],
-                "retrieval_backend": (
-                    answer_chunks[0].metadata.get("retrieval_backend", settings.rag_backend)
-                    if answer_chunks
-                    else settings.rag_backend
-                ),
-                "reranker": (
-                    settings.rag_reranker_provider.lower()
-                    if settings.rag_rerank_enabled
-                    else "score"
-                ),
-            }
-        )
-        scores.append(item)
+    with tracer.start_as_current_span("eval.policy_rag") as span:
+        span.set_attribute("eval.cases", len(cases))
+        span.set_attribute("rag.backend", settings.rag_backend)
+        span.set_attribute("rag.mode", settings.rag_retrieval_mode.lower())
+        span.set_attribute("llm.provider", settings.llm_provider)
+        span.set_attribute("eval.top_k", effective_top_k)
+        for case in cases:
+            with tracer.start_as_current_span("eval.policy_case") as case_span:
+                case_span.set_attribute("eval.case_id", case.id)
+                case_span.set_attribute("eval.expected_chunk_id", case.expected_chunk_id)
+                retrieved_chunks = await retriever.retrieve(case.question, actor, top_k=effective_top_k)
+                reranked_chunks = await reranker.rerank(case.question, retrieved_chunks)
+                answer_chunks = reranked_chunks[:effective_top_k]
+                generated_answer = await llm.answer_policy(case.question, answer_chunks)
+                item = score_retrieval_case(case, answer_chunks, top_k=effective_top_k)
+                item.update(score_answer(case, generated_answer, answer_chunks, top_k=effective_top_k))
+                item.update(await _score_ragas_context(case, answer_chunks))
+                item.update(
+                    {
+                        "generated_answer": generated_answer,
+                        "ground_truth": case.ground_truth,
+                        "pre_rerank_chunk_ids": [
+                            chunk.chunk_id for chunk in retrieved_chunks[:effective_top_k]
+                        ],
+                        "post_rerank_chunk_ids": [chunk.chunk_id for chunk in answer_chunks],
+                        "retrieval_backend": (
+                            answer_chunks[0].metadata.get("retrieval_backend", settings.rag_backend)
+                            if answer_chunks
+                            else settings.rag_backend
+                        ),
+                        "reranker": (
+                            settings.rag_reranker_provider.lower()
+                            if settings.rag_rerank_enabled
+                            else "score"
+                        ),
+                    }
+                )
+                case_span.set_attribute("eval.hit_at_k", bool(item["hit_at_k"]))
+                case_span.set_attribute("eval.ragas_context_precision", float(item.get("ragas_context_precision", 0.0)))
+                case_span.set_attribute("eval.ragas_context_recall", float(item.get("ragas_context_recall", 0.0)))
+                scores.append(item)
 
     summary = summarize_scores(scores, effective_top_k)
     pipeline = {
@@ -296,4 +335,12 @@ async def run_policy_eval(settings: Settings, top_k: int | None = None) -> dict[
     path = eval_report_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    for metric_name, value in summary.items():
+        if isinstance(value, (int, float)):
+            set_gauge(EVAL_SCORE, {"metric": metric_name}, float(value))
+    observe_histogram(
+        EVAL_SECONDS,
+        {"backend": settings.rag_backend, "mode": settings.rag_retrieval_mode.lower()},
+        time.perf_counter() - start,
+    )
     return {"summary": summary, "pipeline": pipeline, "cases": scores[:5], "output": str(path)}

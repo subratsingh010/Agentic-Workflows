@@ -27,6 +27,12 @@ class RedisIdempotencyStore(IdempotencyStore):
             ex=ttl_seconds,
         )
 
+    async def reserve(self, key: str, ttl_seconds: int) -> bool:
+        return bool(await self._redis.set(f"{self._prefix}:lock:{key}", "1", ex=ttl_seconds, nx=True))
+
+    async def release(self, key: str) -> None:
+        await self._redis.delete(f"{self._prefix}:lock:{key}")
+
 
 class RedisRateLimiter(RateLimiter):
     def __init__(self, redis: Redis, limit_per_minute: int, prefix: str = "rate-limit") -> None:

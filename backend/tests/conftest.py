@@ -7,6 +7,7 @@ os.environ.setdefault("PERSISTENCE_BACKEND", "memory")
 os.environ.setdefault("CACHE_BACKEND", "memory")
 os.environ.setdefault("RAG_BACKEND", "memory")
 os.environ.setdefault("LLM_PROVIDER", "mock")
+os.environ.setdefault("ALLOW_DEV_TOKEN", "true")
 os.environ.setdefault("EMBEDDING_PROVIDER", "sentence_transformers")
 os.environ.setdefault("MILVUS_VECTOR_DIM", "384")
 os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = ""

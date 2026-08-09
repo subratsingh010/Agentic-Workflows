@@ -7,21 +7,32 @@ import type {
   RagOpsConfig
 } from "../types/chat";
 
+function authHeaders(): Record<string, string> {
+  const token = localStorage.getItem("employee-support-token") || import.meta.env.VITE_DEV_BEARER_TOKEN;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+export function setBearerToken(token: string): void {
+  localStorage.setItem("employee-support-token", token.trim());
+}
+
 export async function sendMessage(params: {
   message: string;
   threadId?: string;
   confirm?: boolean;
+  confirmationToken?: string | null;
 }): Promise<ChatResponse> {
   const response = await fetch("/api/v1/chat", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: "Bearer dev-token"
+      ...authHeaders()
     },
     body: JSON.stringify({
       message: params.message,
       thread_id: params.threadId,
       confirm: params.confirm ?? false,
+      confirmation_token: params.confirmationToken ?? null,
       idempotency_key: crypto.randomUUID()
     })
   });
@@ -43,7 +54,7 @@ async function opsFetch<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: {
       "Content-Type": "application/json",
-      Authorization: "Bearer dev-token",
+      ...authHeaders(),
       ...(init?.headers ?? {})
     }
   });

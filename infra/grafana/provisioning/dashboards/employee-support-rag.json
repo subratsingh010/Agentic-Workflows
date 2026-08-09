@@ -1,0 +1,191 @@
+{
+  "dashboard": {
+    "uid": "employee-support-rag",
+    "title": "Employee Support RAG, LLM and Eval",
+    "schemaVersion": 39,
+    "refresh": "10s",
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    },
+    "panels": [
+      {
+        "id": 1,
+        "type": "timeseries",
+        "title": "RAG retrieval p95",
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 0
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "Prometheus"
+            },
+            "expr": "histogram_quantile(0.95, sum(rate(employee_support_rag_retrieval_seconds_bucket[5m])) by (le, backend, mode))",
+            "legendFormat": "{{backend}} {{mode}} {{provider}} {{model}} {{stage}} {{reason}} {{metric}}",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "type": "timeseries",
+        "title": "Rerank p95",
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 12,
+          "y": 0
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "Prometheus"
+            },
+            "expr": "histogram_quantile(0.95, sum(rate(employee_support_rag_rerank_seconds_bucket[5m])) by (le, provider))",
+            "legendFormat": "{{backend}} {{mode}} {{provider}} {{model}} {{stage}} {{reason}} {{metric}}",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "type": "timeseries",
+        "title": "LLM p95",
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 8
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "Prometheus"
+            },
+            "expr": "histogram_quantile(0.95, sum(rate(employee_support_llm_seconds_bucket[5m])) by (le, provider, model))",
+            "legendFormat": "{{backend}} {{mode}} {{provider}} {{model}} {{stage}} {{reason}} {{metric}}",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 4,
+        "type": "timeseries",
+        "title": "RAG errors",
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 12,
+          "y": 8
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "Prometheus"
+            },
+            "expr": "sum(rate(employee_support_rag_errors_total[5m])) by (backend, stage)",
+            "legendFormat": "{{backend}} {{mode}} {{provider}} {{model}} {{stage}} {{reason}} {{metric}}",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 5,
+        "type": "timeseries",
+        "title": "LLM errors",
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 16
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "Prometheus"
+            },
+            "expr": "sum(rate(employee_support_llm_errors_total[5m])) by (provider, model)",
+            "legendFormat": "{{backend}} {{mode}} {{provider}} {{model}} {{stage}} {{reason}} {{metric}}",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 6,
+        "type": "timeseries",
+        "title": "Security blocks",
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 12,
+          "y": 16
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "Prometheus"
+            },
+            "expr": "sum(rate(employee_support_security_blocks_total[5m])) by (reason)",
+            "legendFormat": "{{backend}} {{mode}} {{provider}} {{model}} {{stage}} {{reason}} {{metric}}",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 7,
+        "type": "timeseries",
+        "title": "Latest eval scores",
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 24
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "Prometheus"
+            },
+            "expr": "employee_support_eval_score",
+            "legendFormat": "{{backend}} {{mode}} {{provider}} {{model}} {{stage}} {{reason}} {{metric}}",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 8,
+        "type": "timeseries",
+        "title": "Retrieved chunks",
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 12,
+          "y": 24
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "Prometheus"
+            },
+            "expr": "histogram_quantile(0.95, sum(rate(employee_support_rag_retrieved_chunks_bucket[5m])) by (le, backend, mode))",
+            "legendFormat": "{{backend}} {{mode}} {{provider}} {{model}} {{stage}} {{reason}} {{metric}}",
+            "refId": "A"
+          }
+        ]
+      }
+    ]
+  },
+  "overwrite": true
+}

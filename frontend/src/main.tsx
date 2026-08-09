@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Activity, Database, Play, RefreshCw, Send, ShieldCheck } from "lucide-react";
-import { fetchKnowledgeStatus, ingestSeedCorpus, rebuildAndIngest, runPolicyEval, sendMessage } from "./api/client";
+import { fetchKnowledgeStatus, ingestSeedCorpus, rebuildAndIngest, runPolicyEval, sendMessage, setBearerToken } from "./api/client";
 import type { ChatResponse, EvalRunResponse, KnowledgeStatus, RagOpsConfig } from "./types/chat";
 import "./styles.css";
 
@@ -45,6 +45,8 @@ function App() {
   const [draft, setDraft] = useState("");
   const [threadId, setThreadId] = useState<string | undefined>();
   const [pendingConfirmation, setPendingConfirmation] = useState<string | null>(null);
+  const [confirmationToken, setConfirmationToken] = useState<string | null>(null);
+  const [tokenDraft, setTokenDraft] = useState(() => localStorage.getItem("employee-support-token") || import.meta.env.VITE_DEV_BEARER_TOKEN || "");
   const [busy, setBusy] = useState(false);
   const [opsBusy, setOpsBusy] = useState(false);
   const [opsMessage, setOpsMessage] = useState("Ready");
@@ -75,9 +77,10 @@ function App() {
     setDraft("");
     if (!confirm) setMessages((items) => [...items, { role: "user", content: message }]);
     try {
-      const response = await sendMessage({ message, threadId, confirm });
+      const response = await sendMessage({ message, threadId, confirm, confirmationToken });
       setThreadId(response.thread_id);
       setPendingConfirmation(response.requires_confirmation ? message : null);
+      setConfirmationToken(response.requires_confirmation ? response.confirmation_token : null);
       setMessages((items) => [
         ...items,
         { role: "assistant", content: response.answer, response }
@@ -167,6 +170,7 @@ function App() {
             <button
               className="w-fit rounded bg-emerald-600 px-3 py-2 text-sm font-medium text-white"
               onClick={() => submit(true)}
+              disabled={!confirmationToken}
             >
               Confirm leave submission
             </button>
@@ -199,6 +203,24 @@ function App() {
             <Activity className="h-5 w-5 text-emerald-600" />
             <h2 className="text-sm font-semibold">Knowledge & Eval</h2>
           </div>
+          <form
+            className="mb-4 flex gap-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              setBearerToken(tokenDraft);
+              setOpsMessage("Token updated");
+            }}
+          >
+            <input
+              className="min-h-9 flex-1 rounded border border-zinc-300 px-2 text-xs outline-none focus:border-zinc-900"
+              value={tokenDraft}
+              onChange={(event) => setTokenDraft(event.target.value)}
+              placeholder="Bearer token"
+              type="password"
+            />
+            <button className="rounded bg-zinc-900 px-3 text-xs font-medium text-white">Set</button>
+          </form>
+
           <div className="grid grid-cols-2 gap-2 text-sm">
             <div className="rounded border border-zinc-200 p-3">
               <div className="text-xs text-zinc-500">Corpus</div>

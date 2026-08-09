@@ -194,6 +194,8 @@ def summarize_scores(case_scores: list[dict[str, Any]], top_k: int) -> dict[str,
             "llm_judge_score": item_avg("llm_judge_score"),
             "answer_correctness": item_avg("answer_correctness"),
             "answer_groundedness": item_avg("answer_groundedness"),
+            "ragas_context_precision": item_avg("ragas_context_precision"),
+            "ragas_context_recall": item_avg("ragas_context_recall"),
         }
 
     by_category: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -218,6 +220,8 @@ def summarize_scores(case_scores: list[dict[str, Any]], top_k: int) -> dict[str,
         "answer_groundedness": avg("answer_groundedness"),
         "answer_completeness": avg("answer_completeness"),
         "answer_relevance": avg("answer_relevance"),
+        "ragas_context_precision": avg("ragas_context_precision"),
+        "ragas_context_recall": avg("ragas_context_recall"),
         "categories": categories,
     }
 

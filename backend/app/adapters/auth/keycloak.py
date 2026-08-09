@@ -14,24 +14,27 @@ class AuthenticationError(RuntimeError):
 
 
 class KeycloakJWTAuthenticator(Authenticator):
-    def __init__(self, issuer: str, audience: str, jwks_cache_seconds: int = 300) -> None:
+    def __init__(self, issuer: str, audience: str, jwks_cache_seconds: int = 300, allow_dev_token: bool = False) -> None:
         self._issuer = issuer.rstrip("/")
         self._audience = audience
         self._jwks_url = f"{self._issuer}/protocol/openid-connect/certs"
         self._jwks_cache_seconds = jwks_cache_seconds
         self._jwk_client: PyJWKClient | None = None
         self._cache_expires_at = 0.0
+        self._allow_dev_token = allow_dev_token
 
     async def authenticate(self, token: str) -> ActorContext:
-        if token == "dev-token":
+        if token == "dev-token" and self._allow_dev_token:
             return ActorContext(
                 subject="dev-user",
                 employee_id="E1001",
                 email="dev@example.com",
                 department="engineering",
                 country="US",
-                roles={"employee", "manager"},
+                roles={"employee", "manager", "hr_admin"},
             )
+        if token == "dev-token":
+            raise AuthenticationError("dev token is disabled")
         try:
             claims = await self._decode(token)
         except Exception as exc:

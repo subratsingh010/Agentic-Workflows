@@ -24,15 +24,23 @@ async def test_leave_application_requires_confirmation(agent):
 
     assert response.intent == Intent.LEAVE_APPLICATION
     assert response.requires_confirmation is True
+    assert response.confirmation_token
     assert response.tool_result is None
 
 
 @pytest.mark.asyncio
 async def test_confirmed_leave_application_executes_tool(agent):
+    pending = await agent.run(
+        ChatRequest(message="Apply vacation leave from 2026-09-01 to 2026-09-03", thread_id="leave-thread"),
+        "ok",
+    )
+
     response = await agent.run(
         ChatRequest(
             message="Apply vacation leave from 2026-09-01 to 2026-09-03",
+            thread_id="leave-thread",
             confirm=True,
+            confirmation_token=pending.confirmation_token,
             idempotency_key="leave-1",
         ),
         "ok",
@@ -41,4 +49,19 @@ async def test_confirmed_leave_application_executes_tool(agent):
     assert response.requires_confirmation is False
     assert response.tool_result
     assert response.tool_result["status"] == "submitted"
+
+
+@pytest.mark.asyncio
+async def test_leave_confirmation_without_token_is_rejected(agent):
+    response = await agent.run(
+        ChatRequest(
+            message="Apply vacation leave from 2026-09-01 to 2026-09-03",
+            confirm=True,
+        ),
+        "ok",
+    )
+
+    assert response.requires_confirmation is False
+    assert response.tool_result is None
+    assert "confirmation token is missing" in response.answer
 

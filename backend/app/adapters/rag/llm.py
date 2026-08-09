@@ -1,6 +1,15 @@
+import time
+
 import httpx
 from opentelemetry import trace
 
+from app.adapters.observability.metrics import (
+    LLM_ERRORS,
+    LLM_OUTPUT_TOKENS,
+    LLM_SECONDS,
+    increment,
+    observe_histogram,
+)
 from app.application.ports import LLMGenerator
 from app.domain.models import Intent, RetrievedChunk
 
@@ -33,9 +42,16 @@ class MockLLMGenerator(LLMGenerator):
         return await self._classifier.classify_intent(message)
 
     async def answer_policy(self, query: str, chunks: list[RetrievedChunk]) -> str:
-        if not chunks:
-            return "I could not find an accessible policy source for that question."
-        return "Based on the accessible policy sources: " + " ".join(chunk.text for chunk in chunks[:2])
+        start = time.perf_counter()
+        try:
+            if not chunks:
+                answer = "I could not find an accessible policy source for that question."
+            else:
+                answer = "Based on the accessible policy sources: " + " ".join(chunk.text for chunk in chunks[:2])
+            observe_histogram(LLM_OUTPUT_TOKENS, {"provider": "mock", "model": "mock"}, len(answer.split()))
+            return answer
+        finally:
+            observe_histogram(LLM_SECONDS, {"provider": "mock", "model": "mock"}, time.perf_counter() - start)
 
 
 class OllamaLLMGenerator(LLMGenerator):
@@ -56,7 +72,10 @@ class OllamaLLMGenerator(LLMGenerator):
         return await self._classifier.classify_intent(message)
 
     async def answer_policy(self, query: str, chunks: list[RetrievedChunk]) -> str:
+        start = time.perf_counter()
+        labels = {"provider": "ollama", "model": self._model}
         if not chunks:
+            observe_histogram(LLM_SECONDS, labels, time.perf_counter() - start)
             return "I could not find an accessible policy source for that question."
         context = "\n\n".join(
             f"Source {index + 1}: {chunk.title} ({chunk.chunk_id})\n{chunk.text}"
@@ -80,10 +99,18 @@ class OllamaLLMGenerator(LLMGenerator):
                     )
                     response.raise_for_status()
         except httpx.HTTPError:
+            increment(LLM_ERRORS, labels)
+            observe_histogram(LLM_SECONDS, labels, time.perf_counter() - start)
             return await self._fallback.answer_policy(query, chunks)
         data = response.json()
         answer = str(data.get("response", "")).strip()
-        return answer or await self._fallback.answer_policy(query, chunks)
+        if not answer:
+            increment(LLM_ERRORS, labels)
+            observe_histogram(LLM_SECONDS, labels, time.perf_counter() - start)
+            return await self._fallback.answer_policy(query, chunks)
+        observe_histogram(LLM_OUTPUT_TOKENS, labels, len(answer.split()))
+        observe_histogram(LLM_SECONDS, labels, time.perf_counter() - start)
+        return answer
 
 
 class OpenAILLMGenerator(LLMGenerator):
@@ -102,7 +129,10 @@ class OpenAILLMGenerator(LLMGenerator):
         return await self._classifier.classify_intent(message)
 
     async def answer_policy(self, query: str, chunks: list[RetrievedChunk]) -> str:
+        start = time.perf_counter()
+        labels = {"provider": "openai", "model": self._model}
         if not chunks:
+            observe_histogram(LLM_SECONDS, labels, time.perf_counter() - start)
             return "I could not find an accessible policy source for that question."
         context = "\n\n".join(
             f"Source {index + 1}: {chunk.title} ({chunk.chunk_id})\n{chunk.text}"
@@ -128,6 +158,14 @@ class OpenAILLMGenerator(LLMGenerator):
                     input=user_input,
                 )
         except Exception:
+            increment(LLM_ERRORS, labels)
+            observe_histogram(LLM_SECONDS, labels, time.perf_counter() - start)
             return await self._fallback.answer_policy(query, chunks)
         answer = str(getattr(response, "output_text", "")).strip()
-        return answer or await self._fallback.answer_policy(query, chunks)
+        if not answer:
+            increment(LLM_ERRORS, labels)
+            observe_histogram(LLM_SECONDS, labels, time.perf_counter() - start)
+            return await self._fallback.answer_policy(query, chunks)
+        observe_histogram(LLM_OUTPUT_TOKENS, labels, len(answer.split()))
+        observe_histogram(LLM_SECONDS, labels, time.perf_counter() - start)
+        return answer

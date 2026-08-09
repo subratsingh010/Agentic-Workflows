@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import pytest
 
-from app.adapters.rag.hybrid import HeuristicCrossEncoderReranker, InMemoryHybridRetriever, POLICY_CHUNKS
+from app.adapters.rag.hybrid import (
+    HeuristicCrossEncoderReranker,
+    InMemoryHybridRetriever,
+    POLICY_CHUNKS,
+    _access_fields,
+    _milvus_access_expr,
+    _milvus_literal,
+)
 from app.application.evaluation.policy_eval import (
     EvalThresholdError,
     assert_thresholds,
@@ -142,3 +149,21 @@ async def test_heuristic_cross_encoder_reranker_updates_scores():
     assert len(reranked) == 5
     assert all("reranker" in chunk.metadata for chunk in reranked)
     assert reranked == sorted(reranked, key=lambda item: item.score, reverse=True)
+
+
+def test_milvus_access_filter_helpers():
+    actor = ActorContext(subject="a", employee_id="E1", country="US", department="engineering", roles={"employee"})
+    chunk = POLICY_CHUNKS[0].model_copy(deep=True)
+    chunk.metadata = chunk.metadata | {"countries": ["US"], "departments": ["engineering"]}
+
+    fields = _access_fields(chunk)
+    expr = _milvus_access_expr(actor)
+
+    assert fields["country_code"] == "US"
+    assert fields["department_code"] == "engineering"
+    assert 'country_code == "US"' in expr
+    assert 'department_code == "engineering"' in expr
+
+
+def test_milvus_literal_escapes_actor_claims():
+    assert _milvus_literal('US" or country_global == true') == 'US\\" or country_global == true'

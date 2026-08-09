@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     cache_backend: str = "memory"
     rag_backend: str = "memory"
     rabbitmq_url: str = "amqp://app:app@localhost:5672//"
+    ingestion_max_retries: int = 3
     milvus_host: str = "localhost"
     milvus_port: int = 19530
     milvus_collection: str = "employee_policy_chunks"
@@ -26,6 +27,7 @@ class Settings(BaseSettings):
     keycloak_issuer: str = "http://localhost:8080/realms/employee-support"
     keycloak_audience: str = "employee-support-api"
     jwks_cache_seconds: int = 300
+    allow_dev_token: bool = False
     llm_provider: str = "mock"
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.1"
@@ -49,6 +51,7 @@ class Settings(BaseSettings):
     grounding_min_citations: int = 1
     policy_source_dir: str = "data/policies/source"
     rate_limit_per_minute: int = 60
+    confirmation_ttl_seconds: int = 900
     otel_exporter_otlp_endpoint: str | None = None
     phoenix_collector_endpoint: str | None = None
     log_level: str = Field(default="INFO")

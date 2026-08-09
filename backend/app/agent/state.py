@@ -27,5 +27,8 @@ class AgentState(TypedDict, total=False):
     answer_grounding: GroundingReport
     requires_confirmation: bool
     idempotent_response: ChatResponse
+    pending_action_token: str
+    idempotency_reserved: bool
+    previous_checkpoint: dict[str, Any]
     response: ChatResponse
 

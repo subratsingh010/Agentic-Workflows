@@ -25,3 +25,23 @@ CREATE TABLE IF NOT EXISTS audit_events (
   created_at TIMESTAMP NOT NULL DEFAULT now()
 );
 
+
+CREATE TABLE IF NOT EXISTS pending_actions (
+  token VARCHAR(128) PRIMARY KEY,
+  thread_id VARCHAR(128) NOT NULL,
+  actor_subject VARCHAR(128) NOT NULL,
+  intent VARCHAR(64) NOT NULL,
+  tool_payload JSONB NOT NULL,
+  message TEXT NOT NULL,
+  expires_at TIMESTAMP NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS ix_pending_actions_thread_id
+  ON pending_actions(thread_id);
+
+CREATE INDEX IF NOT EXISTS ix_pending_actions_actor_subject
+  ON pending_actions(actor_subject);
+
+CREATE INDEX IF NOT EXISTS ix_pending_actions_expires_at
+  ON pending_actions(expires_at);

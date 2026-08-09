@@ -40,6 +40,7 @@ export type ChatResponse = {
   citations: Citation[];
   answer_grounding: GroundingReport;
   requires_confirmation: boolean;
+  confirmation_token: string | null;
   missing_fields: string[];
   tool_result: Record<string, unknown> | null;
 };
@@ -74,7 +75,7 @@ export type KnowledgeStatus = {
   sparse_weight: number;
   top_k: number;
   milvus_native_hybrid: boolean;
-  embedding_provider: "sentence_transformers";
+  embedding_provider: "sentence_transformers" | "fastembed";
   embedding_model: string;
   embedding_device?: string;
   embedding_dim: number;
@@ -91,7 +92,7 @@ export type RagOpsConfig = {
   dense_weight: number;
   sparse_weight: number;
   candidate_multiplier: number;
-  embedding_provider: "sentence_transformers";
+  embedding_provider: "sentence_transformers" | "fastembed";
   embedding_model: string;
   embedding_device: string;
   embedding_dim: number;

@@ -10,6 +10,7 @@ from app.domain.models import (
     JiraTimeLogResponse,
     LeaveApplicationRequest,
     LeaveApplicationResponse,
+    PendingAction,
     PolicyChunk,
     RetrievedChunk,
 )
@@ -46,6 +47,18 @@ class ConversationRepository(ABC):
     async def load_checkpoint(self, thread_id: str) -> dict[str, Any] | None:
         raise NotImplementedError
 
+    @abstractmethod
+    async def save_pending_action(self, action: PendingAction) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def load_pending_action(self, token: str) -> PendingAction | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def delete_pending_action(self, token: str) -> None:
+        raise NotImplementedError
+
 
 class AuditRepository(ABC):
     @abstractmethod
@@ -62,6 +75,14 @@ class IdempotencyStore(ABC):
 
     @abstractmethod
     async def put(self, key: str, response: ChatResponse, ttl_seconds: int) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def reserve(self, key: str, ttl_seconds: int) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def release(self, key: str) -> None:
         raise NotImplementedError
 
 
